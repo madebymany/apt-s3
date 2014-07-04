@@ -8,7 +8,7 @@ jobs:
     base: "ubuntu:12.04"
     packages:
       - type: debian
-        name: apt-s3
+        name: apt-transport-s3
         depends:
           - libcurl4-openssl-dev
           - libapt-pkg-dev
