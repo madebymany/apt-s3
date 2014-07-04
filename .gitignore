@@ -6,3 +6,4 @@ debian/apt-transport-s3
 debian/apt-transport-s3.substvars
 debian/apt-transport-s3.debhelper.log
 *~
+.vagrant

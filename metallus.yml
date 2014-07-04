@@ -1,6 +1,5 @@
 software_groups: &software
   - "base"
-
 jobs:
   apt-s3:
     builder: "make"
