@@ -1,0 +1,17 @@
+software_groups: &software
+  - "base"
+
+jobs:
+  apt-s3:
+    builder: "make"
+    software_groups: *software
+    base: "ubuntu:12.04"
+    packages:
+      - type: debian
+        name: apt-s3
+        depends:
+          - libcurl4-openssl-dev
+          - libapt-pkg-dev
+        repos:
+          - mxm-public
+        target: install

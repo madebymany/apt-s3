@@ -10,6 +10,5 @@ clean:
 	for d in $(DIRS); do (cd $$d; $(MAKE) clean); done;
 	rm -rf debian/apt-transport-s3*
 
-deb:
-	dpkg-buildpackage -us -uc
-
+install:
+	cp src/s3 /usr/lib/apt/methods
