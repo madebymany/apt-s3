@@ -753,12 +753,16 @@ bool TemporaryIAMCredentials::Request(string aptRole) {
       stringstream rolesListStream(rolesList);
       string role;
       while (getline(rolesListStream, role)) {
+         aptRole = role;
+         break;
+         /** EC2 doesn't support multiple roles at the moment, so no point doing this
          if (role.length() >= IAM_ROLE_SUFFIX.length() &&
              role.compare(role.length() - IAM_ROLE_SUFFIX.length(),
                           IAM_ROLE_SUFFIX.length(), IAM_ROLE_SUFFIX) == 0) {
             aptRole = role;
             break;
          }
+         */
       }
 
       if (aptRole.empty()) {
