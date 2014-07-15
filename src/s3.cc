@@ -63,6 +63,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 // Internet stuff
 #include <netdb.h>
@@ -71,10 +72,11 @@
 #include "connect.h"
 #include "rfc2553emu.h"
 #include "s3.h"
+#include "json.h"
 
-#define SLEN 1024
+#define TOKEN_HEADER "x-amz-security-token"
 
-void doEncrypt(char * kString,char * str, const char * secretKey);
+char * doEncrypt(const char *kString, const char *secretKey);
 									/*}}}*/
 using namespace std;
 
@@ -90,7 +92,34 @@ unsigned long CircleBuf::BwReadLimit=0;
 unsigned long CircleBuf::BwTickReadData=0;
 struct timeval CircleBuf::BwReadTick={0,0};
 const unsigned int CircleBuf::BW_HZ=10;
-  
+
+// {{{ for curl writing to memory
+
+struct MemoryStruct {
+  char *memory;
+  size_t size;
+};
+
+
+static size_t curl_write_memory_callback(void *contents, size_t size, size_t nmemb, void *userp)
+{
+  size_t realsize = size * nmemb;
+  struct MemoryStruct *mem = (struct MemoryStruct *)userp;
+
+  mem->memory = (char *)realloc(mem->memory, mem->size + realsize + 1);
+  if(mem->memory == NULL) {
+      /* out of memory! */
+      cerr << "not enough memory (realloc returned NULL)\n";
+      exit(1);
+    }
+
+  memcpy(&(mem->memory[mem->size]), contents, realsize);
+  mem->size += realsize;
+  mem->memory[mem->size] = 0;
+
+  return realsize;
+}
+
 // CircleBuf::CircleBuf - Circular input buffer				/*{{{*/
 // ---------------------------------------------------------------------
 /* */
@@ -654,7 +683,7 @@ bool ServerState::HeaderLine(string Line)
    
    if (stringcasecmp(Tag,"Last-Modified:") == 0)
    {
-      if (StrToTime(Val,Date) == false)
+      if (RFC1123StrToTime(Val.c_str(),Date) == false)
 	 return _error->Error(_("Unknown date format"));
       return true;
    }
@@ -663,6 +692,121 @@ bool ServerState::HeaderLine(string Line)
 }
 									/*}}}*/
 
+bool getURL(string url, string& result) {
+   struct MemoryStruct rawBody;
+   bool success = false;
+
+   rawBody.memory = (char *)malloc(1);
+   rawBody.size = 0;
+
+   CURL *curlh = curl_easy_init();
+   curl_easy_setopt(curlh, CURLOPT_VERBOSE, 0);
+   curl_easy_setopt(curlh, CURLOPT_URL, url.c_str());
+   curl_easy_setopt(curlh, CURLOPT_USERAGENT, USER_AGENT.c_str());
+   curl_easy_setopt(curlh, CURLOPT_WRITEFUNCTION,
+                    curl_write_memory_callback);
+   curl_easy_setopt(curlh, CURLOPT_WRITEDATA, (void *)&rawBody);
+
+   if (curl_easy_perform(curlh) == CURLE_OK) {
+      long status;
+      if (curl_easy_getinfo(curlh, CURLINFO_RESPONSE_CODE, &status) == CURLE_OK
+          && status == 200) {
+         result.assign(rawBody.memory);
+         success = true;
+      }
+   }
+
+   if (rawBody.memory) {
+      free(rawBody.memory);
+   }
+   curl_easy_cleanup(curlh);
+
+   return success;
+}
+
+TemporaryIAMCredentials::TemporaryIAMCredentials() {
+   Tried = false;
+   Succeeded = false;
+}
+
+bool TemporaryIAMCredentials::Request() {
+   return Request("");
+}
+
+bool TemporaryIAMCredentials::Request(string aptRole) {
+   if (Tried && !Expired()) {
+      return Succeeded;
+   }
+
+   AccessKeyId.clear();
+   SecretAccessKey.clear();
+   Token.clear();
+   Succeeded = false;
+   Tried = true;
+
+   if (aptRole.empty()) {
+      string rolesList;
+      if (!getURL(TEMP_CREDS_URL, rolesList)) {
+         return false;
+      }
+
+      stringstream rolesListStream(rolesList);
+      string role;
+      while (getline(rolesListStream, role)) {
+         if (role.length() >= IAM_ROLE_SUFFIX.length() &&
+             role.compare(role.length() - IAM_ROLE_SUFFIX.length(),
+                          IAM_ROLE_SUFFIX.length(), IAM_ROLE_SUFFIX) == 0) {
+            aptRole = role;
+            break;
+         }
+      }
+
+      if (aptRole.empty()) {
+         // Warn somehow?
+         return false;
+      }
+   }
+
+   string rawJson;
+   if (getURL(TEMP_CREDS_URL + aptRole, rawJson)) {
+      json_value *jv = json_parse(rawJson.c_str(), rawJson.size() + 1);
+      string objName, objValue;
+      struct tm expirationTm;
+
+      for (int i = 0; i < jv->u.object.length; i++) {
+         objName = string(jv->u.object.values[i].name);
+         objValue = string(jv->u.object.values[i].value->u.string.ptr);
+
+         if (objName == "Code") {
+            if (objValue != "Success") {
+               return false;
+            }
+         } else if (objName == "AccessKeyId") {
+            AccessKeyId = objValue;
+         } else if (objName == "SecretAccessKey") {
+            SecretAccessKey = objValue;
+         } else if (objName == "Token") {
+            Token = objValue;
+         } else if (objName == "Expiration") {
+            strptime(objValue.c_str(), "%Y-%m-%dT%H:%M:%S%Z", &expirationTm);
+            // Give ourselves 10s grace period
+            Expires = mktime(&expirationTm) - 10;
+         }
+      }
+      Succeeded = true;
+   }
+
+   return Succeeded;
+}
+
+bool TemporaryIAMCredentials::Expired() {
+   return Tried && (Expires > time(NULL));
+}
+
+// }}}
+//
+// ---------------------------------------------------------------------
+/* This places the http request in the outbound buffer */
 // HttpMethod::SendReq - Send the HTTP request				/*{{{*/
 // ---------------------------------------------------------------------
 /* This places the http request in the outbound buffer */
@@ -782,38 +926,65 @@ void HttpMethod::SendReq(FetchItem *Itm,CircleBuf &Out)
    string dateString((const char*)buffer);
    Req += "Date: " + dateString + "\r\n";
 
-   string extractedPassword;
-   if (Uri.Password.empty() && NULL == getenv("AWS_SECRET_ACCESS_KEY")) {
-     cerr << "E: No AWS_SECRET_ACCESS_KEY set" << endl;
-     exit(1);
-   } else if(Uri.Password.empty()) {
-     extractedPassword = getenv("AWS_SECRET_ACCESS_KEY");
+   string user, extractedPassword;
+   list<string> signHeaders;
+
+   if ((Uri.User.empty() || Uri.User == IAM_ROLE_URL_USER) &&
+       SavedIAMCredentials.Request(Uri.Password)) {
+
+      user = SavedIAMCredentials.AccessKeyId;
+      extractedPassword = SavedIAMCredentials.SecretAccessKey;
+      Req += TOKEN_HEADER ": " + SavedIAMCredentials.Token + "\r\n";
+      signHeaders.push_back(TOKEN_HEADER ":" + SavedIAMCredentials.Token);
+
    } else {
-     if(Uri.Password.at(0) == '['){
-       extractedPassword = Uri.Password.substr(1,Uri.Password.size()-2);
-     }else{
-       extractedPassword = Uri.Password;
-     }
+      char *envUser = getenv("AWS_ACCESS_KEY_ID");
+      if (!Uri.User.empty()) {
+         user = Uri.User;
+      } else if (envUser != NULL) {
+         user = string(envUser);
+      } else {
+         cerr << "E: No access key ID found";
+         exit(1);
+      }
+
+      char *envPassword = getenv("AWS_SECRET_ACCESS_KEY");
+      if (!Uri.Password.empty()) {
+         if (Uri.Password.at(0) == '[') {
+            extractedPassword =
+               Uri.Password.substr(1, Uri.Password.size() - 2);
+         } else {
+            extractedPassword = Uri.Password;
+         }
+      } else if (envPassword != NULL) {
+         extractedPassword = string(envPassword);
+      } else {
+         cerr << "E: No secret access key found";
+         exit(1);
+      }
    }
 
-   char headertext[SLEN], signature[SLEN];
-   sprintf(headertext,"GET\n\n\n%s\n%s", dateString.c_str(), normalized_path.c_str());
-   doEncrypt(headertext, signature, extractedPassword.c_str());
+   signHeaders.sort();
+   string serialSignHeaders;
+   list<string>::iterator it;
+   for (it = signHeaders.begin(); it != signHeaders.end(); ++it) {
+      serialSignHeaders += *it + "\n";
+   }
+
+   char *headertext, *signature;
+   const char *headerPreamble = "GET\n\n\n";
+   headertext = (char *)malloc(strlen(headerPreamble) + dateString.size() +
+                       serialSignHeaders.size() + normalized_path.size() + 2);
+   sprintf(headertext, "%s%s\n%s%s", headerPreamble, dateString.c_str(),
+           serialSignHeaders.c_str(), normalized_path.c_str());
+   signature = doEncrypt(headertext, extractedPassword.c_str());
 
    string signatureString(signature);
-  string user;
-  if (Uri.User.empty() && NULL == getenv("AWS_ACCESS_KEY_ID")) {
-    cerr << "E: No AWS_ACCESS_KEY_ID set" << endl;
-    exit(1);
-  } else if (Uri.User.empty()) {
-    user = getenv("AWS_ACCESS_KEY_ID");
-  } else {
-    user = Uri.User;
-  }
+   free(signature);
+   free(headertext);
 
-  //cerr << "user " << user << "\n";
-	Req += "Authorization: AWS " + user + ":" + signatureString + "\r\n";
-   	Req += "User-Agent: Ubuntu APT-HTTP/1.3 ("VERSION")\r\n\r\n";
+   Req += "Authorization: AWS " + user + ":" + signatureString + "\r\n";
+   Req += "User-Agent: " + USER_AGENT + "\r\n\r\n";
 
    if (Debug == true)
      cerr << "Request" << endl << Req << endl;
@@ -821,39 +992,38 @@ void HttpMethod::SendReq(FetchItem *Itm,CircleBuf &Out)
    Out.Read(Req);
 }
 
-void doEncrypt(char *kString, char *sigString, const char* secretKey){
-	HMAC_CTX hctx;
+char * doEncrypt(const char *kString, const char *secretKey) {
 	BIO *bio, *b64;
-	char *sigptr;
+	char *skey, *sigptr, *sigString;
 	long siglen = -1;
-	unsigned int rizlen;
-	char skey[SLEN];
-	unsigned char results[SLEN];
+	unsigned char *hmacResult;
+	unsigned int hmacResultLen;
 
-	// Initialize SHA1 encryption
-	sprintf(skey, "%s", secretKey);
-	HMAC_CTX_init(&hctx);
-	HMAC_Init(&hctx, skey, (int)strlen((char *)skey), EVP_sha1());
+        hmacResult = (unsigned char *)malloc(EVP_MAX_MD_SIZE);
 
 	// Encrypt
-	HMAC(EVP_sha1(), skey, (int)strlen((char *)skey), (unsigned char *)kString,
-			(int)strlen((char *)kString), results, &rizlen);
+	HMAC(EVP_sha1(), secretKey, strlen(secretKey),
+	     (unsigned char *)kString, strlen(kString),
+	     hmacResult, &hmacResultLen);
 
 	// Base 64 Encode
 	b64 = BIO_new(BIO_f_base64());
 	bio = BIO_new(BIO_s_mem());
 	BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
 	bio = BIO_push(b64, bio);
-	BIO_write(bio, results, rizlen);
+	BIO_write(bio, hmacResult, hmacResultLen);
 	BIO_flush(bio);
 
 	siglen = BIO_get_mem_data(bio, &sigptr);
+	sigString = (char *)malloc(siglen + 1);
 	memcpy(sigString, sigptr, siglen);
 	sigString[siglen] = '\0';
 
 	// Clean up Encryption, Encoding
 	BIO_free_all(bio);
-	HMAC_CTX_cleanup(&hctx);
+	free(hmacResult);
+
+	return sigString;
 }
 									/*}}}*/
 // HttpMethod::Go - Run a single loop					/*{{{*/
