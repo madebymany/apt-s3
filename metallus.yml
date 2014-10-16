@@ -1,6 +1,12 @@
 software_groups: &software
   - "base"
   - "apts3_build"
+
+packages:
+  branch_codenames:
+    master: unstable
+    production: stable
+
 jobs:
   apt-s3:
     builder: "make"
