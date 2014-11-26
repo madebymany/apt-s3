@@ -1,17 +1,15 @@
-software_groups: &software
-  - "base"
-  - "apts3_build"
-
 packages:
   branch_codenames:
-    master: unstable
-    production: stable
+    master: trusty-unstable
+    production: trusty-stable
 
 jobs:
   apt-s3:
     builder: "make"
-    software_groups: *software
-    base: "ubuntu:12.04"
+    base: "quay.io/madebymany/build-bases:trusty"
+    build_depends:
+      - "libcurl4-openssl-dev"
+      - "libapt-pkg-dev"
     packages:
       - type: debian
         name: apt-transport-s3
