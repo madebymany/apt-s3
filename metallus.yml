@@ -6,7 +6,6 @@ packages:
 jobs:
   apt-s3:
     builder: "make"
-    software_groups: *software
     base: "quay.io/madebymany/build-bases:trusty"
     build_depends:
       - "libcurl4-openssl-dev"
