@@ -19,3 +19,5 @@ jobs:
         repos:
           - mxm-public
         target: install
+        conflicts:
+          - "/usr/lib/apt/methods/s3"
