@@ -1,12 +1,12 @@
 packages:
   branch_codenames:
-    master: trusty-unstable
-    production: trusty-stable
+    master: unstable
+    production: stable
 
 jobs:
   apt-s3:
     builder: "make"
-    base: "quay.io/madebymany/build-bases:trusty"
+    base: "quay.io/madebymany/build-bases:precise"
     build_depends:
       - "libcurl4-openssl-dev"
       - "libapt-pkg-dev"
