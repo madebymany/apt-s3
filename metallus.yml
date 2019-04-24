@@ -1,13 +1,14 @@
 packages:
   branch_codenames:
-    master: trusty-unstable
-    production: trusty-stable
+    master: bionic-unstable
+    production: bionic-stable
 
 jobs:
   apt-s3:
     builder: "make"
-    base: "quay.io/madebymany/build-bases:trusty"
+    base: "quay.io/madebymany/build-bases:bionic"
     build_depends:
+      - "libssl-dev"
       - "libcurl4-openssl-dev"
       - "libapt-pkg-dev"
     packages:
