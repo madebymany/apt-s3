@@ -8,6 +8,7 @@ jobs:
     builder: "make"
     base: "quay.io/madebymany/build-bases:bionic"
     build_depends:
+      - "libssl-dev"
       - "libcurl4-openssl-dev"
       - "libapt-pkg-dev"
     packages:
