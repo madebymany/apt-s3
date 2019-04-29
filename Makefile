@@ -11,4 +11,5 @@ clean:
 	rm -rf debian/apt-transport-s3*
 
 install:
-	cp src/s3 /usr/lib/apt/methods
+	mkdir -p /usr/lib/apt/methods/
+	cp src/s3 /usr/lib/apt/methods/
