@@ -1,12 +1,12 @@
 packages:
   branch_codenames:
-    master: bionic-unstable
-    production: bionic-stable
+    master: focal-unstable
+    production: focal-stable
 
 jobs:
   apt-s3:
     builder: "make"
-    base: "quay.io/madebymany/build-bases:bionic"
+    base: "quay.io/madebymany/build-bases:focal"
     build_depends:
       - "libssl-dev"
       - "libcurl4-openssl-dev"
